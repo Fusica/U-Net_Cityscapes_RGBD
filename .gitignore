@@ -1,0 +1,35 @@
+# macOS
+.DS_Store
+
+# Linux
+*~
+.directory
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# PyCharm
+.idea/*
+*.iml
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# 临时文件
+*.log
+*.tmp
+*.swp
+
+# 环境配置文件
+.env
