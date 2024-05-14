@@ -20,6 +20,8 @@ class CityscapesRGBDDataset(Dataset):
         self.label_paths = []
 
         for city in os.listdir(self.images_dir):
+            if city == '.DS_Store':
+                continue
             city_images_dir = os.path.join(self.images_dir, city)
             city_depth_dir = os.path.join(self.depth_dir, city)
             city_labels_dir = os.path.join(self.labels_dir, city)
@@ -35,13 +37,26 @@ class CityscapesRGBDDataset(Dataset):
         return len(self.image_paths)
 
     def __getitem__(self, idx):
-        image = cv2.imread(self.image_paths[idx])
-        depth = cv2.imread(self.depth_paths[idx], cv2.IMREAD_GRAYSCALE)
-        label = cv2.imread(self.label_paths[idx], cv2.IMREAD_GRAYSCALE)
+        image_path = self.image_paths[idx]
+        depth_path = self.depth_paths[idx]
+        label_path = self.label_paths[idx]
+
+        image = cv2.imread(image_path)
+        depth = cv2.imread(depth_path, cv2.IMREAD_GRAYSCALE)
+        label = cv2.imread(label_path, cv2.IMREAD_GRAYSCALE)
+
+        if image is None:
+            raise FileNotFoundError(f"RGB image not found: {image_path}")
+        if depth is None:
+            raise FileNotFoundError(f"Depth image not found: {depth_path}")
+        if label is None:
+            raise FileNotFoundError(f"Label image not found: {label_path}")
 
         if self.transform:
             image = self.transform(image)
-            depth = transforms.ToTensor()(depth).unsqueeze(0)  # 将深度图像转换为tensor并增加一个通道维度
+            depth = cv2.resize(depth, (image.shape[2], image.shape[1]))  # 调整深度图像的大小与RGB图像一致
+            label = cv2.resize(label, (image.shape[2], image.shape[1]), interpolation=cv2.INTER_NEAREST)  # 调整标签图像的大小
+            depth = transforms.ToTensor()(depth)  # 将深度图像转换为tensor并增加一个通道维度
 
         rgbd = torch.cat([image, depth], dim=0)  # 将RGB和深度图像在通道维度上拼接
 
