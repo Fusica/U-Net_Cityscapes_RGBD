@@ -5,12 +5,12 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+import wandb
 from unet import UNet
 from dataset import CityscapesRGBDDataset, transform
 import os
 
 from utils.choose_device import get_device
-
 
 def evaluate(model, data_loader, device, criterion):
     model.eval()
@@ -24,8 +24,10 @@ def evaluate(model, data_loader, device, criterion):
             running_loss += loss.item()
     return running_loss / len(data_loader)
 
-
 def train(args):
+    # Initialize wandb
+    wandb.init(project="unet-cityscapes-rgbd", config=args)
+
     device = get_device()
 
     model = UNet(in_channels=4, out_channels=34)
@@ -70,11 +72,13 @@ def train(args):
 
         epoch_loss = running_loss / len(train_loader)
         writer.add_scalar('Loss/train', epoch_loss, epoch)
+        wandb.log({"Loss/train": epoch_loss})
         print(f'Epoch [{epoch + 1}/{args.epochs}], Loss: {epoch_loss:.4f}')
 
         if (epoch + 1) % 5 == 0 or (epoch + 1) == args.epochs:
             val_loss = evaluate(model, val_loader, device, criterion)
             writer.add_scalar('Loss/val', val_loss, epoch)
+            wandb.log({"Loss/val": val_loss})
             print(f'Epoch [{epoch + 1}/{args.epochs}], Validation Loss: {val_loss:.4f}')
 
             torch.save({
@@ -89,14 +93,14 @@ def train(args):
                 torch.save(model.state_dict(), 'best_model.pth')
 
     writer.close()
-
+    wandb.finish()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train U-Net on Cityscapes RGB-D dataset")
     parser.add_argument('--data_path', type=str, default="/Volumes/Data-1T/Datasets/Cityscapes",
                         help="Path to Cityscapes dataset")
     parser.add_argument('--epochs', type=int, default=50, help="Number of epochs to train")
-    parser.add_argument('--batch_size', type=int, default=4, help="Batch size for training")
+    parser.add_argument('--batch_size', type=int, default=8, help="Batch size for training")
     parser.add_argument('--lr', type=float, default=1e-4, help="Learning rate")
     parser.add_argument('--resume', type=str, default=None, help="Path to resume training from a checkpoint")
 
