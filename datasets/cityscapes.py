@@ -1,10 +1,11 @@
 import os
-import torch
-from torch.utils.data import Dataset, DataLoader, DistributedSampler
-from torchvision import transforms
+from torch.utils.data import Dataset
 from PIL import Image
+from torchvision import transforms
 import numpy as np
 import matplotlib.pyplot as plt
+
+from datasets.custom_transform import Normalize, ToTensor, CropBlackArea, RandomHorizontalFlip, RandomScaleCrop
 
 
 class CityscapesRGBDDataset(Dataset):
@@ -47,28 +48,36 @@ class CityscapesRGBDDataset(Dataset):
         depth = Image.open(depth_path).convert('L')
         label = Image.open(label_path).convert('L')
 
+        sample = {'image': image, 'depth': depth, 'label': label}
+
         if self.transform:
-            image = self.transform(image)
-            depth = self.transform(depth)
-            label = self.transform(label)
+            sample = self.transform(sample)
 
-            depth = depth.unsqueeze(0)  # 增加一个通道维度
-            label = label.unsqueeze(0)  # 增加一个通道维度
-
-        rgbd = torch.cat([image, depth], dim=0)  # 将RGB和深度图像在通道维度上拼接
-
-        return rgbd, label.squeeze().long()
+        return sample['image'], sample['depth'], sample['label'].long()
 
 
-# 定义数据增强的transform
-transform = transforms.Compose([
-    transforms.Resize((512, 1024)),
-    transforms.RandomCrop((480, 960)),
-    transforms.RandomHorizontalFlip(),
-    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.2),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406, 0.5], std=[0.229, 0.224, 0.225, 0.5])
+base_size = 1024
+crop_size = 480
+
+train_transform = transforms.Compose([
+    CropBlackArea(),
+    RandomHorizontalFlip(),
+    RandomScaleCrop(base_size=base_size, crop_size=crop_size, fill=255),
+    Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    ToTensor()
 ])
+
+val_transform = transforms.Compose([
+    CropBlackArea(),
+    Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    ToTensor()
+])
+
+test_transform = transforms.Compose([
+    Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    ToTensor()
+])
+
 
 
 def save_augmented_images(dataloader, save_dir, num_images=5):
@@ -76,13 +85,12 @@ def save_augmented_images(dataloader, save_dir, num_images=5):
     count = 0
 
     for batch in dataloader:
-        images, labels = batch
+        images, depths, labels = batch
         for i in range(images.shape[0]):
             if count >= num_images:
                 return
-            rgbd = images[i].numpy()
-            rgb = rgbd[:3, :, :]
-            depth = rgbd[3, :, :]
+            rgb = images[i].numpy()
+            depth = depths[i].numpy()
             label = labels[i].numpy()
 
             # 反归一化
@@ -92,12 +100,12 @@ def save_augmented_images(dataloader, save_dir, num_images=5):
             rgb = np.clip(rgb, 0, 1)
 
             # 保存RGB图像
-            plt.imsave(f'{save_dir}/image_{count}.png', np.transpose(rgb, (1, 2, 0)))
+            plt.imsave(os.path.join(save_dir, f'image_{count}.png'), np.transpose(rgb, (1, 2, 0)))
 
             # 保存深度图像
-            plt.imsave(f'{save_dir}/depth_{count}.png', depth, cmap='gray')
+            plt.imsave(os.path.join(save_dir, f'depth_{count}.png'), depth, cmap='gray')
 
             # 保存标签图像
-            plt.imsave(f'{save_dir}/label_{count}.png', label, cmap='gray')
+            plt.imsave(os.path.join(save_dir, f'label_{count}.png'), label, cmap='gray')
 
             count += 1

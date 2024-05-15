@@ -10,9 +10,10 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.cuda.amp import GradScaler, autocast
 
-from datasets.cityscapes import CityscapesRGBDDataset, transform, save_augmented_images
+from datasets.cityscapes import CityscapesRGBDDataset, train_transform, val_transform, save_augmented_images
 from models.unet import UNet
 from utils.utils import evaluate, get_run_folder, print_args
+
 
 def train(rank, args):
     os.environ['MASTER_ADDR'] = 'localhost'
@@ -23,23 +24,26 @@ def train(rank, args):
         import wandb
         wandb.init(project="unet-cityscapes-rgbd", config=args)
 
-    dist.init_process_group("nccl", rank=rank, world_size=args.world_size)
-    device = torch.device(f'cuda:{rank}')
-    torch.cuda.set_device(device)
+    if args.world_size > 1:
+        dist.init_process_group("gloo", rank=rank, world_size=args.world_size)
+
+    device = torch.device(f'cuda:{rank}' if torch.cuda.is_available() else 'cpu')
+    if torch.cuda.is_available():
+        torch.cuda.set_device(device)
 
     if rank == 0:
-        print(f"Using GPU: {torch.cuda.get_device_name(device)} (CUDA ID: {rank})")
+        print(f"Using device: {device} (Rank: {rank})")
         print_args(args)
         print(f"Experiment folder: {run_folder}")
 
     model = UNet(in_channels=4, out_channels=34).to(device)
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[rank])
+    if args.world_size > 1:
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[rank] if torch.cuda.is_available() else None)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scaler = GradScaler()  # Create a GradScaler for mixed precision training
+    scaler = GradScaler() if torch.cuda.is_available() else None
 
-    # Learning rate scheduler
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     start_epoch = 0
@@ -56,16 +60,28 @@ def train(rank, args):
         if rank == 0:
             print(f"Resuming training from epoch {start_epoch}")
 
-    train_dataset = CityscapesRGBDDataset(root=args.data_path, split='train', transform=transform)
-    val_dataset = CityscapesRGBDDataset(root=args.data_path, split='val', transform=transform)
+    train_dataset = CityscapesRGBDDataset(
+        root=args.data_path,
+        split='train',
+        transform=train_transform
+    )
+    val_dataset = CityscapesRGBDDataset(
+        root=args.data_path,
+        split='val',
+        transform=val_transform
+    )
 
-    train_sampler = DistributedSampler(train_dataset, num_replicas=args.world_size, rank=rank)
-    val_sampler = DistributedSampler(val_dataset, num_replicas=args.world_size, rank=rank)
+    if args.world_size > 1:
+        train_sampler = DistributedSampler(train_dataset, num_replicas=args.world_size, rank=rank)
+        val_sampler = DistributedSampler(val_dataset, num_replicas=args.world_size, rank=rank)
+    else:
+        train_sampler = None
+        val_sampler = None
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=train_sampler)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, sampler=val_sampler)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=train_sampler,
+                              shuffle=(train_sampler is None))
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, sampler=val_sampler, shuffle=(val_sampler is None))
 
-    # 在训练开始前保存五张数据增强后的图片
     if rank == 0:
         augmented_images_dir = os.path.join(run_folder, 'augmented_images')
         save_augmented_images(train_loader, save_dir=augmented_images_dir, num_images=5)
@@ -76,27 +92,32 @@ def train(rank, args):
     for epoch in range(start_epoch, args.epochs):
         model.train()
         running_loss = 0.0
-        train_sampler.set_epoch(epoch)
+        if args.world_size > 1:
+            train_sampler.set_epoch(epoch)
         with tqdm(total=len(train_loader), desc=f'Epoch {epoch + 1}/{args.epochs}', disable=(rank != 0)) as pbar:
-            for images, labels in train_loader:
-                images = images.to(device)
-                labels = labels.to(device)
+            for images, depths, labels in train_loader:
+                images, depths, labels = images.to(device), depths.to(device), labels.to(device)
 
                 optimizer.zero_grad()
-                with autocast():  # Use autocast for mixed precision
-                    outputs = model(images)
+                if scaler is not None:
+                    with autocast():
+                        outputs = model(torch.cat([images, depths.unsqueeze(1)], dim=1))
+                        loss = criterion(outputs, labels)
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    outputs = model(torch.cat([images, depths.unsqueeze(1)], dim=1))
                     loss = criterion(outputs, labels)
-
-                scaler.scale(loss).backward()  # Scale the loss for mixed precision
-                scaler.step(optimizer)  # Step the optimizer
-                scaler.update()  # Update the scaler
+                    loss.backward()
+                    optimizer.step()
 
                 running_loss += loss.item()
                 pbar.set_postfix({'loss': running_loss / (pbar.n + 1)})
                 pbar.update(1)
 
         epoch_loss = running_loss / len(train_loader)
-        scheduler.step()  # Update the learning rate
+        scheduler.step()
 
         if rank == 0:
             writer.add_scalar('Loss/train', epoch_loss, epoch)
@@ -104,15 +125,14 @@ def train(rank, args):
                 wandb.log({"Loss/train": epoch_loss})
             print(f'Epoch [{epoch + 1}/{args.epochs}], Loss: {epoch_loss:.4f}')
 
-            # Run validation at the end of each epoch
             val_loss, val_miou = evaluate(model, val_loader, device, criterion, num_classes=34)
             writer.add_scalar('Loss/val', val_loss, epoch)
             writer.add_scalar('mIoU/val', val_miou, epoch)
             if args.use_wandb:
                 wandb.log({"Loss/val": val_loss, "mIoU/val": val_miou})
-            print(f'Epoch [{epoch + 1}/{args.epochs}], Validation Loss: {val_loss:.4f}, Validation mIoU: {val_miou:.4f}')
+            print(
+                f'Epoch [{epoch + 1}/{args.epochs}], Validation Loss: {val_loss:.4f}, Validation mIoU: {val_miou:.4f}')
 
-            # Save the latest model and delete the previous one
             current_model_path = os.path.join(run_folder, f'model_checkpoint_epoch_{epoch + 1}.pth')
             torch.save({
                 'epoch': epoch,
@@ -124,7 +144,6 @@ def train(rank, args):
                 os.remove(last_model_path)
             last_model_path = current_model_path
 
-            # Save the best model and delete the previous one
             if val_loss < best_loss:
                 best_loss = val_loss
                 if best_model_path and os.path.exists(best_model_path):
@@ -137,21 +156,27 @@ def train(rank, args):
         if args.use_wandb:
             wandb.finish()
 
-    dist.destroy_process_group()
+    if args.world_size > 1:
+        dist.destroy_process_group()
+
 
 if __name__ == '__main__':
     import argparse
+
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--epochs', type=int, default=100, help='number of epochs to train for')
     parser.add_argument('--batch_size', type=int, default=8, help='input batch size')
     parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
     parser.add_argument('--weight_decay', type=float, default=1e-4, help='weight decay')
-    parser.add_argument('--data_path', type=str, required=True, help='path to dataset')
+    parser.add_argument('--data_path', type=str, default="/Volumes/Data-1T/Datasets/Cityscapes", help='path to dataset')
     parser.add_argument('--resume', type=str, default=None, help='path to resume checkpoint')
     parser.add_argument('--use_wandb', action='store_true', help='use wandb for logging')
     parser.add_argument('--world_size', type=int, default=1, help='number of distributed processes')
 
     args = parser.parse_args()
 
-    mp.spawn(train, args=(args,), nprocs=args.world_size, join=True)
+    if args.world_size > 1:
+        mp.spawn(train, args=(args,), nprocs=args.world_size, join=True)
+    else:
+        train(0, args)

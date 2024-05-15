@@ -3,6 +3,7 @@ import numpy as np
 from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
 
 import os
+import datetime
 from tqdm import tqdm
 
 
@@ -71,11 +72,8 @@ def evaluate(model, data_loader, device, criterion, num_classes):
 
 
 def get_run_folder(base_path='runs'):
-    run_id = 1
-    while os.path.exists(os.path.join(base_path, f'run{run_id}')):
-        run_id += 1
-    run_folder = os.path.join(base_path, f'run{run_id}')
-    os.makedirs(run_folder)
+    run_folder = os.path.join(base_path, datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S'))
+    os.makedirs(run_folder, exist_ok=True)
     return run_folder
 
 
