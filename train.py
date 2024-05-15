@@ -12,6 +12,21 @@ from datasets.cityscapes import CityscapesRGBDDataset, transform
 from models.unet import UNet
 from utils.utils import calculate_iou, evaluate, get_run_folder, print_args
 
+import os
+import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data import DataLoader, DistributedSampler
+from tqdm import tqdm
+import torch.nn as nn
+import torch.optim as optim
+from torch.cuda.amp import GradScaler, autocast
+
+from datasets.cityscapes import CityscapesRGBDDataset, transform
+from models.unet import UNet
+from utils.utils import calculate_iou, evaluate, get_run_folder, print_args
+
 
 def train(rank, args):
     os.environ['MASTER_ADDR'] = 'localhost'
@@ -36,6 +51,7 @@ def train(rank, args):
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    scaler = GradScaler()
 
     start_epoch = 0
     best_loss = float('inf')
@@ -73,10 +89,12 @@ def train(rank, args):
                 labels = labels.to(device)
 
                 optimizer.zero_grad()
-                outputs = model(images)
-                loss = criterion(outputs, labels)
-                loss.backward()
-                optimizer.step()
+                with autocast():
+                    outputs = model(images)
+                    loss = criterion(outputs, labels)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
 
                 running_loss += loss.item()
                 pbar.set_postfix({'loss': running_loss / (pbar.n + 1)})
