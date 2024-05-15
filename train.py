@@ -32,7 +32,6 @@ def train(rank, args):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
 
-    run_folder = get_run_folder()
     if args.use_wandb and rank == 0:
         import wandb
         wandb.init(project="unet-cityscapes-rgbd", config=args)
@@ -40,6 +39,17 @@ def train(rank, args):
     dist.init_process_group("nccl", rank=rank, world_size=args.world_size)
     device = torch.device(f'cuda:{rank}')
     torch.cuda.set_device(device)
+
+    if rank == 0:
+        run_folder = get_run_folder()
+    else:
+        run_folder = None
+
+    # Broadcast run_folder from rank 0 to all other processes
+    run_folder = run_folder if run_folder is not None else 'None'
+    run_folder = torch.tensor(list(run_folder.ljust(256)), dtype=torch.int8, device=device)
+    dist.broadcast(run_folder, 0)
+    run_folder = ''.join(chr(i) for i in run_folder.tolist()).strip()
 
     if rank == 0:
         print(f"Using GPU: {torch.cuda.get_device_name(device)} (CUDA ID: {rank})")

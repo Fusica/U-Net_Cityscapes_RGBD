@@ -42,10 +42,13 @@ def evaluate(model, data_loader, device, criterion, num_classes):
 
 def get_run_folder(base_path='runs'):
     run_id = 1
-    while os.path.exists(os.path.join(base_path, f'run{run_id}')):
-        run_id += 1
-    run_folder = os.path.join(base_path, f'run{run_id}')
-    os.makedirs(run_folder)
+    while True:
+        run_folder = os.path.join(base_path, f'run{run_id}')
+        try:
+            os.makedirs(run_folder)
+            break
+        except FileExistsError:
+            run_id += 1
     return run_folder
 
 
