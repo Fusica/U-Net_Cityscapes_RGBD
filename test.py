@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from models.unet import UNet
-from datasets.cityscapes import CityscapesRGBDDataset, test_transform
+from datasets.cityscapes import CityscapesRGBDDataset
 from utils.utils import evaluate
 
 
@@ -14,7 +14,7 @@ def test(args):
     model.load_state_dict(torch.load(args.model_path, map_location=device))
 
     # 加载测试数据集
-    test_dataset = CityscapesRGBDDataset(root=args.data_path, split='val', transform=test_transform)
+    test_dataset = CityscapesRGBDDataset(root=args.data_path, split='val')
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
     # 评估模型

@@ -1,6 +1,5 @@
 import torch
 import numpy as np
-from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
 
 import os
 import datetime
@@ -21,7 +20,7 @@ def calculate_iou(preds, labels, num_classes):
     return np.nanmean(ious)  # 计算去掉nan值的平均
 
 
-# TODO 检查mIOU的计算是否正确
+# TODO 检查mIoU的计算是否正确
 def evaluate(model, data_loader, device, criterion, num_classes):
     model.eval()
     running_loss = 0.0

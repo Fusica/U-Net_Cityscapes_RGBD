@@ -49,6 +49,8 @@ class CropBlackArea(object):
         img = sample['image']
         depth = sample['depth']
         mask = sample['label']
+        if depth.mode != 'L':
+            depth = depth.convert('L')
         width, height = img.size
         left = 140
         top = 30
@@ -107,7 +109,7 @@ class RandomGaussianBlur(object):
 class RandomScaleCrop(object):
     def __init__(self, base_size, crop_size, fill=0):
         self.base_size = base_size
-        self.crop_size = crop_size
+        self.crop_size = (crop_size, crop_size) if isinstance(crop_size, int) else crop_size
         self.fill = fill
 
     def __call__(self, sample):
@@ -125,18 +127,20 @@ class RandomScaleCrop(object):
         img = img.resize((ow, oh), Image.BILINEAR)
         depth = depth.resize((ow, oh), Image.BILINEAR)
         mask = mask.resize((ow, oh), Image.NEAREST)
-        if short_size < self.crop_size:
-            padh = self.crop_size - oh if oh < self.crop_size else 0
-            padw = self.crop_size - ow if ow < self.crop_size else 0
+
+        if short_size < min(self.crop_size):
+            padw = self.crop_size[0] - ow if ow < self.crop_size[0] else 0
+            padh = self.crop_size[1] - oh if oh < self.crop_size[1] else 0
             img = ImageOps.expand(img, border=(0, 0, padw, padh), fill=0)
             depth = ImageOps.expand(depth, border=(0, 0, padw, padh), fill=0)
             mask = ImageOps.expand(mask, border=(0, 0, padw, padh), fill=self.fill)
+
         w, h = img.size
-        x1 = random.randint(0, w - self.crop_size)
-        y1 = random.randint(0, h - self.crop_size)
-        img = img.crop((x1, y1, x1 + self.crop_size, y1 + self.crop_size))
-        depth = depth.crop((x1, y1, x1 + self.crop_size, y1 + self.crop_size))
-        mask = mask.crop((x1, y1, x1 + self.crop_size, y1 + self.crop_size))
+        x1 = random.randint(0, w - self.crop_size[0])
+        y1 = random.randint(0, h - self.crop_size[1])
+        img = img.crop((x1, y1, x1 + self.crop_size[0], y1 + self.crop_size[1]))
+        depth = depth.crop((x1, y1, x1 + self.crop_size[0], y1 + self.crop_size[1]))
+        mask = mask.crop((x1, y1, x1 + self.crop_size[0], y1 + self.crop_size[1]))
 
         return {'image': img, 'depth': depth, 'label': mask}
 

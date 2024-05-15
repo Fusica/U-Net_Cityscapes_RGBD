@@ -14,7 +14,7 @@ from tqdm import tqdm
 from datetime import datetime
 
 from models.unet import UNet
-from datasets.cityscapes import CityscapesRGBDDataset, transform
+from datasets.cityscapes import CityscapesRGBDDataset
 
 
 def calculate_iou(pred, target, num_classes):
@@ -42,12 +42,11 @@ def evaluate(model, data_loader, device, criterion, num_classes, scaler):
             images = images.to(device)
             labels = labels.to(device)
 
-            with torch.cuda.amp.autocast():
+            with torch.cuda.amp.autocast(enabled=device.type == 'cuda'):
                 outputs = model(images)
                 loss = criterion(outputs, labels)
             running_loss += loss.item()
 
-            # Calculate IoU
             _, preds = torch.max(outputs, 1)
             iou = calculate_iou(preds, labels, num_classes)
             iou_total += iou
@@ -56,24 +55,27 @@ def evaluate(model, data_loader, device, criterion, num_classes, scaler):
 
 
 def train(rank, args, run_dir):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
+    if args.use_cpu:
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = '12355'
+        dist.init_process_group("gloo", rank=rank, world_size=args.world_size)
+        device = torch.device('cpu')
+    else:
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = '12355'
+        dist.init_process_group("nccl", rank=rank, world_size=args.world_size)
+        device = torch.device(f'cuda:{rank}')
+        torch.cuda.set_device(device)
 
-    if args.use_wandb and rank == 0:
-        wandb.init(project="unet-cityscapes-rgbd", config=args)
-
-    dist.init_process_group("nccl", rank=rank, world_size=args.world_size)
-    device = torch.device(f'cuda:{rank}')
-    torch.cuda.set_device(device)
-
-    print(f"Using GPU: {torch.cuda.get_device_name(device)} (CUDA ID: {rank})")
+    print(f"Using device: {device}")
 
     model = UNet(in_channels=4, out_channels=34).to(device)
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[rank])
+    if not args.use_cpu:
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[rank])
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.cuda.amp.GradScaler(enabled=device.type == 'cuda')
 
     start_epoch = 0
     best_loss = float('inf')
@@ -87,14 +89,14 @@ def train(rank, args, run_dir):
         if rank == 0:
             print(f"Resuming training from epoch {start_epoch}")
 
-    train_dataset = CityscapesRGBDDataset(root=args.data_path, split='train', transform=transform)
-    val_dataset = CityscapesRGBDDataset(root=args.data_path, split='val', transform=transform)
+    train_dataset = CityscapesRGBDDataset(root=args.data_path, split='train')
+    val_dataset = CityscapesRGBDDataset(root=args.data_path, split='val')
 
     train_sampler = DistributedSampler(train_dataset, num_replicas=args.world_size, rank=rank)
     val_sampler = DistributedSampler(val_dataset, num_replicas=args.world_size, rank=rank)
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=train_sampler)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, sampler=val_sampler)
+    train_loader = DataLoader(train_dataset, batch_size=args.train_batch_size, sampler=train_sampler)
+    val_loader = DataLoader(val_dataset, batch_size=args.val_batch_size, sampler=val_sampler)
 
     if rank == 0:
         log_dir = os.path.join(run_dir, 'log')
@@ -173,11 +175,13 @@ def main():
     parser.add_argument('--data_path', type=str, default="/mnt/xwj/datasets/Cityscapes",
                         help="Path to Cityscapes dataset")
     parser.add_argument('--epochs', type=int, default=500, help="Number of epochs to train")
-    parser.add_argument('--batch_size', type=int, default=8, help="Batch size for training")
+    parser.add_argument('--train_batch_size', type=int, default=8, help="Batch size for training")
+    parser.add_argument('--val_batch_size', type=int, default=2, help='validation batch size')
     parser.add_argument('--lr', type=float, default=1e-4, help="Learning rate")
     parser.add_argument('--resume', type=str, default=None, help="Path to resume training from a checkpoint")
     parser.add_argument('--use_wandb', action='store_true', help="Use Weights and Biases for logging")
     parser.add_argument('--world_size', type=int, default=4, help="Number of GPUs to use for DDP training")
+    parser.add_argument('--use_cpu', action='store_true', help="Use CPU for training instead of GPU")
 
     args = parser.parse_args()
 
