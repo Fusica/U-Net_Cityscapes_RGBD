@@ -1,56 +1,82 @@
-import os
 import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, DistributedSampler
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.utils.tensorboard import SummaryWriter
-from torch.utils.data import DataLoader, DistributedSampler
+
+import numpy as np
+import os
+import wandb
+import argparse
 from tqdm import tqdm
-import torch.nn as nn
-import torch.optim as optim
-from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.cuda.amp import GradScaler, autocast
+from datetime import datetime
 
-from datasets.cityscapes import CityscapesRGBDDataset, train_transform, val_transform, save_augmented_images
 from models.unet import UNet
-from utils.utils import evaluate, get_run_folder, print_args
+from datasets.cityscapes import CityscapesRGBDDataset, transform
 
 
-def train(rank, args):
+def calculate_iou(pred, target, num_classes):
+    ious = []
+    pred = pred.view(-1)
+    target = target.view(-1)
+
+    for cls in range(num_classes):
+        pred_inds = (pred == cls)
+        target_inds = (target == cls)
+        intersection = (pred_inds[target_inds]).long().sum().item()
+        union = pred_inds.long().sum().item() + target_inds.long().sum().item() - intersection
+        if union != 0:
+            ious.append(float(intersection) / union)
+
+    return np.mean(ious)
+
+
+def evaluate(model, data_loader, device, criterion, num_classes, scaler):
+    model.eval()
+    running_loss = 0.0
+    iou_total = 0.0
+    with torch.no_grad():
+        for images, labels in data_loader:
+            images = images.to(device)
+            labels = labels.to(device)
+
+            with torch.cuda.amp.autocast():
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+            running_loss += loss.item()
+
+            # Calculate IoU
+            _, preds = torch.max(outputs, 1)
+            iou = calculate_iou(preds, labels, num_classes)
+            iou_total += iou
+
+    return running_loss / len(data_loader), iou_total / len(data_loader)
+
+
+def train(rank, args, run_dir):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
 
-    run_folder = get_run_folder()
     if args.use_wandb and rank == 0:
-        import wandb
         wandb.init(project="unet-cityscapes-rgbd", config=args)
 
-    if args.world_size > 1:
-        dist.init_process_group("nccl" if torch.cuda.is_available() else "gloo", rank=rank, world_size=args.world_size)
+    dist.init_process_group("nccl", rank=rank, world_size=args.world_size)
+    device = torch.device(f'cuda:{rank}')
+    torch.cuda.set_device(device)
 
-    device = torch.device(f'cuda:{rank}' if torch.cuda.is_available() else 'cpu')
-    if torch.cuda.is_available():
-        torch.cuda.set_device(device)
+    print(f"Using GPU: {torch.cuda.get_device_name(device)} (CUDA ID: {rank})")
 
-    if rank == 0:
-        print(f"Using device: {device} (Rank: {rank})")
-        print_args(args)
-        print(f"Experiment folder: {run_folder}")
-
-    num_classes = 34  # 确认你的数据集是否有 34 个类
-    model = UNet(in_channels=4, out_channels=num_classes).to(device)
-    if args.world_size > 1:
-        model = nn.parallel.DistributedDataParallel(model, device_ids=[rank] if torch.cuda.is_available() else None)
+    model = UNet(in_channels=4, out_channels=34).to(device)
+    model = nn.parallel.DistributedDataParallel(model, device_ids=[rank])
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scaler = GradScaler() if torch.cuda.is_available() else None
-
-    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    scaler = torch.cuda.amp.GradScaler()
 
     start_epoch = 0
     best_loss = float('inf')
-    best_model_path = None
-    last_model_path = None
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=device)
@@ -61,130 +87,108 @@ def train(rank, args):
         if rank == 0:
             print(f"Resuming training from epoch {start_epoch}")
 
-    train_dataset = CityscapesRGBDDataset(
-        root=args.data_path,
-        split='train',
-        transform=train_transform
-    )
-    val_dataset = CityscapesRGBDDataset(
-        root=args.data_path,
-        split='val',
-        transform=val_transform
-    )
+    train_dataset = CityscapesRGBDDataset(root=args.data_path, split='train')
+    val_dataset = CityscapesRGBDDataset(root=args.data_path, split='val')
 
-    if args.world_size > 1:
-        train_sampler = DistributedSampler(train_dataset, num_replicas=args.world_size, rank=rank)
-        val_sampler = DistributedSampler(val_dataset, num_replicas=args.world_size, rank=rank)
-    else:
-        train_sampler = None
-        val_sampler = None
+    train_sampler = DistributedSampler(train_dataset, num_replicas=args.world_size, rank=rank)
+    val_sampler = DistributedSampler(val_dataset, num_replicas=args.world_size, rank=rank)
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=train_sampler,
-                              shuffle=(train_sampler is None))
-    val_loader = DataLoader(val_dataset, batch_size=args.val_batch_size, sampler=val_sampler, shuffle=(val_sampler is None))
+    train_loader = DataLoader(train_dataset, batch_size=args.train_batch_size, sampler=train_sampler)
+    val_loader = DataLoader(val_dataset, batch_size=args.val_batch_size, sampler=val_sampler)
 
     if rank == 0:
-        augmented_images_dir = os.path.join(run_folder, 'augmented_images')
-        save_augmented_images(train_loader, save_dir=augmented_images_dir, num_images=5)
-
-    if rank == 0:
-        writer = SummaryWriter(log_dir=run_folder)
+        log_dir = os.path.join(run_dir, 'log')
+        model_dir = os.path.join(run_dir, 'models')
+        os.makedirs(log_dir, exist_ok=True)
+        os.makedirs(model_dir, exist_ok=True)
+        writer = SummaryWriter(log_dir=log_dir)
 
     for epoch in range(start_epoch, args.epochs):
         model.train()
         running_loss = 0.0
-        if args.world_size > 1:
-            train_sampler.set_epoch(epoch)
-        with tqdm(total=len(train_loader), desc=f'Epoch {epoch + 1}/{args.epochs}', disable=(rank != 0),
-                  ascii=True) as pbar:
-            for images, depths, labels in train_loader:
-                images, depths, labels = images.to(device), depths.to(device), labels.to(device)
+        train_sampler.set_epoch(epoch)
+        with tqdm(total=len(train_loader), desc=f'Epoch {epoch + 1}/{args.epochs}', disable=(rank != 0)) as pbar:
+            for images, labels in train_loader:
+                images = images.to(device)
+                labels = labels.to(device)
 
                 optimizer.zero_grad()
-                if scaler is not None:
-                    with autocast():
-                        outputs = model(torch.cat([images, depths.unsqueeze(1)], dim=1))
-                        loss = criterion(outputs, labels)
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    outputs = model(torch.cat([images, depths.unsqueeze(1)], dim=1))
+                with torch.cuda.amp.autocast():
+                    outputs = model(images)
                     loss = criterion(outputs, labels)
-                    loss.backward()
-                    optimizer.step()
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
 
                 running_loss += loss.item()
-                pbar.set_postfix({'loss': running_loss / (pbar.n + 1)})
+                memory_allocated = torch.cuda.memory_allocated(device) / (1024 * 1024)  # Convert bytes to MB
+                pbar.set_postfix({'loss': running_loss / (pbar.n + 1), 'memory(MB)': memory_allocated})
                 pbar.update(1)
 
         epoch_loss = running_loss / len(train_loader)
-        scheduler.step()
-
         if rank == 0:
             writer.add_scalar('Loss/train', epoch_loss, epoch)
             if args.use_wandb:
                 wandb.log({"Loss/train": epoch_loss})
             print(f'Epoch [{epoch + 1}/{args.epochs}], Loss: {epoch_loss:.4f}')
 
-            model.eval()
-            with torch.no_grad():
-                val_loss, val_miou = evaluate(model, val_loader, device, criterion, num_classes=num_classes)
-            writer.add_scalar('Loss/val', val_loss, epoch)
-            writer.add_scalar('mIoU/val', val_miou, epoch)
-            if args.use_wandb:
-                wandb.log({"Loss/val": val_loss, "mIoU/val": val_miou})
-            print(
-                f'Epoch [{epoch + 1}/{args.epochs}], Validation Loss: {val_loss:.4f}, Validation mIoU: {val_miou:.4f}')
+            # Run validation at the end of each epoch
+            val_loss, val_miou = evaluate(model, val_loader, device, criterion, num_classes=34, scaler=scaler)
+            if rank == 0:
+                writer.add_scalar('Loss/val', val_loss, epoch)
+                writer.add_scalar('mIoU/val', val_miou, epoch)
+                if args.use_wandb:
+                    wandb.log({"Loss/val": val_loss, "mIoU/val": val_miou})
+                print(
+                    f'Epoch [{epoch + 1}/{args.epochs}], Validation Loss: {val_loss:.4f}, Validation mIoU: {val_miou:.4f}')
 
-            current_model_path = os.path.join(run_folder, f'model_checkpoint_epoch_{epoch + 1}.pth')
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'best_loss': best_loss,
-            }, current_model_path)
-            if last_model_path and os.path.exists(last_model_path):
-                os.remove(last_model_path)
-            last_model_path = current_model_path
+                # Save last checkpoint
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'best_loss': best_loss,
+                }, os.path.join(model_dir, 'last_model.pth'))
 
-            if val_loss < best_loss:
-                best_loss = val_loss
-                if best_model_path and os.path.exists(best_model_path):
-                    os.remove(best_model_path)
-                best_model_path = os.path.join(run_folder, 'best_model.pth')
-                torch.save(model.state_dict(), best_model_path)
+                # Save best checkpoint
+                if val_loss < best_loss:
+                    best_loss = val_loss
+                    torch.save(model.state_dict(), os.path.join(model_dir, 'best_model.pth'))
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+                # Remove old checkpoints
+                for file in os.listdir(model_dir):
+                    if file.startswith('model_checkpoint_epoch_'):
+                        os.remove(os.path.join(model_dir, file))
 
     if rank == 0:
         writer.close()
         if args.use_wandb:
             wandb.finish()
 
-    if args.world_size > 1:
-        dist.destroy_process_group()
+    dist.destroy_process_group()
 
 
-if __name__ == '__main__':
-    import argparse
-
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument('--epochs', type=int, default=100, help='number of epochs to train for')
-    parser.add_argument('--batch_size', type=int, default=8, help='input batch size')
+def main():
+    parser = argparse.ArgumentParser(description="Train U-Net on Cityscapes RGB-D dataset")
+    parser.add_argument('--data_path', type=str, default="/mnt/xwj/datasets/Cityscapes",
+                        help="Path to Cityscapes dataset")
+    parser.add_argument('--epochs', type=int, default=500, help="Number of epochs to train")
+    parser.add_argument('--train_batch_size', type=int, default=8, help="Batch size for training")
     parser.add_argument('--val_batch_size', type=int, default=4, help='validation batch size')
-    parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
-    parser.add_argument('--weight_decay', type=float, default=1e-4, help='weight decay')
-    parser.add_argument('--data_path', type=str, default="/Volumes/Data-1T/Datasets/Cityscapes", help='path to dataset')
-    parser.add_argument('--resume', type=str, default=None, help='path to resume checkpoint')
-    parser.add_argument('--use_wandb', action='store_true', help='use wandb for logging')
-    parser.add_argument('--world_size', type=int, default=1, help='number of distributed processes')
+    parser.add_argument('--lr', type=float, default=1e-4, help="Learning rate")
+    parser.add_argument('--resume', type=str, default=None, help="Path to resume training from a checkpoint")
+    parser.add_argument('--use_wandb', action='store_true', help="Use Weights and Biases for logging")
+    parser.add_argument('--world_size', type=int, default=4, help="Number of GPUs to use for DDP training")
 
     args = parser.parse_args()
 
-    if args.world_size > 1:
-        mp.spawn(train, args=(args,), nprocs=args.world_size, join=True)
-    else:
-        train(0, args)
+    # Create a unique run directory
+    current_time = datetime.now().strftime('%Y%m%d-%H%M%S')
+    run_dir = os.path.join('runs', current_time)
+    os.makedirs(run_dir, exist_ok=True)
+
+    mp.spawn(train, nprocs=args.world_size, args=(args, run_dir))
+
+
+if __name__ == "__main__":
+    main()

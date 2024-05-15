@@ -1,110 +1,100 @@
 import os
+import cv2
+import torch
 from torch.utils.data import Dataset
+from torchvision.transforms import transforms
 from PIL import Image
-from torchvision import transforms
-import numpy as np
-import matplotlib.pyplot as plt
 
-from datasets.custom_transform import Normalize, ToTensor, CropBlackArea, RandomHorizontalFlip, RandomScaleCrop
+from datasets import custom_transform as tr
 
 
 class CityscapesRGBDDataset(Dataset):
-    def __init__(self, root, split='train', transform=None):
+    def __init__(self, root, split='train'):
         self.root = root
         self.split = split
-        self.transform = transform
+        self.images = {}
+        self.disparities = {}
+        self.labels = {}
 
-        self.images_dir = os.path.join(root, 'leftImg8bit', split)
-        self.depth_dir = os.path.join(root, 'disparity', split)
-        self.labels_dir = os.path.join(root, 'gtFine', split)
+        self.images_base = os.path.join(self.root, 'leftImg8bit', self.split)
+        self.disparities_base = os.path.join(self.root, 'disparity', self.split)
+        self.annotations_base = os.path.join(self.root, 'gtFine', self.split)
 
-        self.image_paths = []
-        self.depth_paths = []
-        self.label_paths = []
+        self.images[split] = self.recursive_glob(rootdir=self.images_base, suffix='.png')
+        self.images[split].sort()
 
-        for city in os.listdir(self.images_dir):
-            if city == '.DS_Store':
-                continue
-            city_images_dir = os.path.join(self.images_dir, city)
-            city_depth_dir = os.path.join(self.depth_dir, city)
-            city_labels_dir = os.path.join(self.labels_dir, city)
-            for file_name in os.listdir(city_images_dir):
-                if file_name.endswith('_leftImg8bit.png'):
-                    self.image_paths.append(os.path.join(city_images_dir, file_name))
-                    depth_name = file_name.replace('_leftImg8bit.png', '_disparity.png')
-                    self.depth_paths.append(os.path.join(city_depth_dir, depth_name))
-                    label_name = file_name.replace('_leftImg8bit.png', '_gtFine_labelIds.png')
-                    self.label_paths.append(os.path.join(city_labels_dir, label_name))
+        self.disparities[split] = self.recursive_glob(rootdir=self.disparities_base, suffix='.png')
+        self.disparities[split].sort()
+
+        self.labels[split] = self.recursive_glob(rootdir=self.annotations_base, suffix='labelTrainIds.png')
+        self.labels[split].sort()
+
+        self.ignore_index = 255
+
+        if not self.images[split]:
+            raise Exception("No RGB images for split=[%s] found in %s" % (split, self.images_base))
+        if not self.disparities[split]:
+            raise Exception("No depth images for split=[%s] found in %s" % (split, self.disparities_base))
+
+        print("Found %d %s RGB images" % (len(self.images[split]), split))
+        print("Found %d %s disparity images" % (len(self.disparities[split]), split))
 
     def __len__(self):
-        return len(self.image_paths)
+        return len(self.images[self.split])
 
-    def __getitem__(self, idx):
-        image_path = self.image_paths[idx]
-        depth_path = self.depth_paths[idx]
-        label_path = self.label_paths[idx]
+    def __getitem__(self, index):
 
-        image = Image.open(image_path).convert('RGB')
-        depth = Image.open(depth_path).convert('L')
-        label = Image.open(label_path).convert('L')
+        img_path = self.images[self.split][index].rstrip()
+        disp_path = self.disparities[self.split][index].rstrip()
+        lbl_path = self.labels[self.split][index].rstrip()
+        _img = Image.open(img_path).convert('RGB')
+        _depth = Image.open(disp_path)
+        _target = Image.open(lbl_path)
 
-        sample = {'image': image, 'depth': depth, 'label': label}
+        sample = {'image': _img, 'depth': _depth, 'label': _target}
 
-        if self.transform:
-            sample = self.transform(sample)
+        if self.split == 'train':
+            return self.transform_tr(sample)
+        elif self.split == 'val':
+            return self.transform_val(sample), img_path
+        elif self.split == 'test':
+            return self.transform_ts(sample)
 
-        return sample['image'], sample['depth'], sample['label'].long()
+    def recursive_glob(self, rootdir='.', suffix=''):
+        """Performs recursive glob with given suffix and rootdir
+            :param rootdir is the root directory
+            :param suffix is the suffix to be searched
+        """
+        return [os.path.join(looproot, filename)
+                for looproot, _, filenames in os.walk(rootdir)
+                for filename in filenames if filename.endswith(suffix)]
 
+    def transform_tr(self, sample):
+        composed_transforms = transforms.Compose([
+            tr.CropBlackArea(),
+            tr.RandomHorizontalFlip(),
+            tr.RandomScaleCrop(base_size=1024, crop_size=768, fill=255),
+            # tr.RandomGaussianBlur(),
+            tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            tr.ToTensor()])
 
-base_size = 1024
-crop_size = 480
+        return composed_transforms(sample)
 
-train_transform = transforms.Compose([
-    CropBlackArea(),
-    RandomHorizontalFlip(),
-    RandomScaleCrop(base_size=base_size, crop_size=crop_size, fill=255),
-    Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-    ToTensor()
-])
+    def transform_val(self, sample):
 
-val_transform = transforms.Compose([
-    CropBlackArea(),
-    Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-    ToTensor()
-])
+        composed_transforms = transforms.Compose([
+            tr.CropBlackArea(),
+            tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            tr.ToTensor()])
 
-test_transform = transforms.Compose([
-    Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-    ToTensor()
-])
+        return composed_transforms(sample)
 
+    def transform_ts(self, sample):
 
-def save_augmented_images(dataloader, save_dir, num_images=5):
-    os.makedirs(save_dir, exist_ok=True)
-    count = 0
+        composed_transforms = transforms.Compose([
+            tr.CropBlackArea(),
+            tr.FixedResize(size=768),
+            tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            tr.ToTensor()])
 
-    for batch in dataloader:
-        images, depths, labels = batch
-        for i in range(images.shape[0]):
-            if count >= num_images:
-                return
-            rgb = images[i].numpy()
-            depth = depths[i].numpy()
-            label = labels[i].numpy()
-
-            # 反归一化
-            mean = np.array([0.485, 0.456, 0.406])
-            std = np.array([0.229, 0.224, 0.225])
-            rgb = std[:, None, None] * rgb + mean[:, None, None]
-            rgb = np.clip(rgb, 0, 1)
-
-            # 保存RGB图像
-            plt.imsave(os.path.join(save_dir, f'image_{count}.png'), np.transpose(rgb, (1, 2, 0)))
-
-            # 保存深度图像
-            plt.imsave(os.path.join(save_dir, f'depth_{count}.png'), depth, cmap='gray')
-
-            # 保存标签图像
-            plt.imsave(os.path.join(save_dir, f'label_{count}.png'), label, cmap='gray')
-
-            count += 1
+        return composed_transforms(sample)
