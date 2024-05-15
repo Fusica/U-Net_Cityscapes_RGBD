@@ -25,7 +25,7 @@ def train(rank, args):
         wandb.init(project="unet-cityscapes-rgbd", config=args)
 
     if args.world_size > 1:
-        dist.init_process_group("gloo", rank=rank, world_size=args.world_size)
+        dist.init_process_group("nccl" if torch.cuda.is_available() else "gloo", rank=rank, world_size=args.world_size)
 
     device = torch.device(f'cuda:{rank}' if torch.cuda.is_available() else 'cpu')
     if torch.cuda.is_available():
@@ -36,7 +36,8 @@ def train(rank, args):
         print_args(args)
         print(f"Experiment folder: {run_folder}")
 
-    model = UNet(in_channels=4, out_channels=34).to(device)
+    num_classes = 34  # 确认你的数据集是否有 34 个类
+    model = UNet(in_channels=4, out_channels=num_classes).to(device)
     if args.world_size > 1:
         model = nn.parallel.DistributedDataParallel(model, device_ids=[rank] if torch.cuda.is_available() else None)
 
@@ -80,7 +81,7 @@ def train(rank, args):
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=train_sampler,
                               shuffle=(train_sampler is None))
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, sampler=val_sampler, shuffle=(val_sampler is None))
+    val_loader = DataLoader(val_dataset, batch_size=args.val_batch_size, sampler=val_sampler, shuffle=(val_sampler is None))
 
     if rank == 0:
         augmented_images_dir = os.path.join(run_folder, 'augmented_images')
@@ -94,7 +95,8 @@ def train(rank, args):
         running_loss = 0.0
         if args.world_size > 1:
             train_sampler.set_epoch(epoch)
-        with tqdm(total=len(train_loader), desc=f'Epoch {epoch + 1}/{args.epochs}', disable=(rank != 0)) as pbar:
+        with tqdm(total=len(train_loader), desc=f'Epoch {epoch + 1}/{args.epochs}', disable=(rank != 0),
+                  ascii=True) as pbar:
             for images, depths, labels in train_loader:
                 images, depths, labels = images.to(device), depths.to(device), labels.to(device)
 
@@ -125,7 +127,9 @@ def train(rank, args):
                 wandb.log({"Loss/train": epoch_loss})
             print(f'Epoch [{epoch + 1}/{args.epochs}], Loss: {epoch_loss:.4f}')
 
-            val_loss, val_miou = evaluate(model, val_loader, device, criterion, num_classes=34)
+            model.eval()
+            with torch.no_grad():
+                val_loss, val_miou = evaluate(model, val_loader, device, criterion, num_classes=num_classes)
             writer.add_scalar('Loss/val', val_loss, epoch)
             writer.add_scalar('mIoU/val', val_miou, epoch)
             if args.use_wandb:
@@ -151,6 +155,9 @@ def train(rank, args):
                 best_model_path = os.path.join(run_folder, 'best_model.pth')
                 torch.save(model.state_dict(), best_model_path)
 
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     if rank == 0:
         writer.close()
         if args.use_wandb:
@@ -167,6 +174,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--epochs', type=int, default=100, help='number of epochs to train for')
     parser.add_argument('--batch_size', type=int, default=8, help='input batch size')
+    parser.add_argument('--val_batch_size', type=int, default=4, help='validation batch size')
     parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
     parser.add_argument('--weight_decay', type=float, default=1e-4, help='weight decay')
     parser.add_argument('--data_path', type=str, default="/Volumes/Data-1T/Datasets/Cityscapes", help='path to dataset')
