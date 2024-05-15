@@ -7,11 +7,12 @@ from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
 import torch.nn as nn
 import torch.optim as optim
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.cuda.amp import GradScaler, autocast
 
-from datasets.cityscapes import CityscapesRGBDDataset, transform
+from datasets.cityscapes import CityscapesRGBDDataset, transform, save_augmented_images
 from models.unet import UNet
-from utils.utils import calculate_iou, evaluate, get_run_folder, print_args
-
+from utils.utils import evaluate, get_run_folder, print_args
 
 def train(rank, args):
     os.environ['MASTER_ADDR'] = 'localhost'
@@ -35,7 +36,11 @@ def train(rank, args):
     model = nn.parallel.DistributedDataParallel(model, device_ids=[rank])
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scaler = GradScaler()  # Create a GradScaler for mixed precision training
+
+    # Learning rate scheduler
+    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     start_epoch = 0
     best_loss = float('inf')
@@ -60,6 +65,11 @@ def train(rank, args):
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=train_sampler)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, sampler=val_sampler)
 
+    # 在训练开始前保存五张数据增强后的图片
+    if rank == 0:
+        augmented_images_dir = os.path.join(run_folder, 'augmented_images')
+        save_augmented_images(train_loader, save_dir=augmented_images_dir, num_images=5)
+
     if rank == 0:
         writer = SummaryWriter(log_dir=run_folder)
 
@@ -73,16 +83,21 @@ def train(rank, args):
                 labels = labels.to(device)
 
                 optimizer.zero_grad()
-                outputs = model(images)
-                loss = criterion(outputs, labels)
-                loss.backward()
-                optimizer.step()
+                with autocast():  # Use autocast for mixed precision
+                    outputs = model(images)
+                    loss = criterion(outputs, labels)
+
+                scaler.scale(loss).backward()  # Scale the loss for mixed precision
+                scaler.step(optimizer)  # Step the optimizer
+                scaler.update()  # Update the scaler
 
                 running_loss += loss.item()
                 pbar.set_postfix({'loss': running_loss / (pbar.n + 1)})
                 pbar.update(1)
 
         epoch_loss = running_loss / len(train_loader)
+        scheduler.step()  # Update the learning rate
+
         if rank == 0:
             writer.add_scalar('Loss/train', epoch_loss, epoch)
             if args.use_wandb:
@@ -95,8 +110,7 @@ def train(rank, args):
             writer.add_scalar('mIoU/val', val_miou, epoch)
             if args.use_wandb:
                 wandb.log({"Loss/val": val_loss, "mIoU/val": val_miou})
-            print(
-                f'Epoch [{epoch + 1}/{args.epochs}], Validation Loss: {val_loss:.4f}, Validation mIoU: {val_miou:.4f}')
+            print(f'Epoch [{epoch + 1}/{args.epochs}], Validation Loss: {val_loss:.4f}, Validation mIoU: {val_miou:.4f}')
 
             # Save the latest model and delete the previous one
             current_model_path = os.path.join(run_folder, f'model_checkpoint_epoch_{epoch + 1}.pth')
@@ -124,3 +138,20 @@ def train(rank, args):
             wandb.finish()
 
     dist.destroy_process_group()
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--epochs', type=int, default=100, help='number of epochs to train for')
+    parser.add_argument('--batch_size', type=int, default=8, help='input batch size')
+    parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
+    parser.add_argument('--weight_decay', type=float, default=1e-4, help='weight decay')
+    parser.add_argument('--data_path', type=str, required=True, help='path to dataset')
+    parser.add_argument('--resume', type=str, default=None, help='path to resume checkpoint')
+    parser.add_argument('--use_wandb', action='store_true', help='use wandb for logging')
+    parser.add_argument('--world_size', type=int, default=1, help='number of distributed processes')
+
+    args = parser.parse_args()
+
+    mp.spawn(train, args=(args,), nprocs=args.world_size, join=True)

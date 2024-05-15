@@ -1,8 +1,10 @@
 import os
-import cv2
 import torch
-from torch.utils.data import Dataset
-from torchvision.transforms import transforms
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
+from torchvision import transforms
+from PIL import Image
+import numpy as np
+import matplotlib.pyplot as plt
 
 
 class CityscapesRGBDDataset(Dataset):
@@ -12,7 +14,7 @@ class CityscapesRGBDDataset(Dataset):
         self.transform = transform
 
         self.images_dir = os.path.join(root, 'leftImg8bit', split)
-        self.depth_dir = os.path.join(root, 'disparity', split)  # 假设深度图像存储在'disparity'目录下
+        self.depth_dir = os.path.join(root, 'disparity', split)
         self.labels_dir = os.path.join(root, 'gtFine', split)
 
         self.image_paths = []
@@ -41,30 +43,61 @@ class CityscapesRGBDDataset(Dataset):
         depth_path = self.depth_paths[idx]
         label_path = self.label_paths[idx]
 
-        image = cv2.imread(image_path)
-        depth = cv2.imread(depth_path, cv2.IMREAD_GRAYSCALE)
-        label = cv2.imread(label_path, cv2.IMREAD_GRAYSCALE)
-
-        if image is None:
-            raise FileNotFoundError(f"RGB image not found: {image_path}")
-        if depth is None:
-            raise FileNotFoundError(f"Depth image not found: {depth_path}")
-        if label is None:
-            raise FileNotFoundError(f"Label image not found: {label_path}")
+        image = Image.open(image_path).convert('RGB')
+        depth = Image.open(depth_path).convert('L')
+        label = Image.open(label_path).convert('L')
 
         if self.transform:
             image = self.transform(image)
-            depth = cv2.resize(depth, (image.shape[2], image.shape[1]))  # 调整深度图像的大小与RGB图像一致
-            label = cv2.resize(label, (image.shape[2], image.shape[1]), interpolation=cv2.INTER_NEAREST)  # 调整标签图像的大小
-            depth = transforms.ToTensor()(depth)  # 将深度图像转换为tensor并增加一个通道维度
+            depth = self.transform(depth)
+            label = self.transform(label)
+
+            depth = depth.unsqueeze(0)  # 增加一个通道维度
+            label = label.unsqueeze(0)  # 增加一个通道维度
 
         rgbd = torch.cat([image, depth], dim=0)  # 将RGB和深度图像在通道维度上拼接
 
-        return rgbd, torch.from_numpy(label).long()
+        return rgbd, label.squeeze().long()
 
 
+# 定义数据增强的transform
 transform = transforms.Compose([
-    transforms.ToPILImage(),
     transforms.Resize((512, 1024)),
-    transforms.ToTensor()
+    transforms.RandomCrop((480, 960)),
+    transforms.RandomHorizontalFlip(),
+    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.2),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406, 0.5], std=[0.229, 0.224, 0.225, 0.5])
 ])
+
+
+def save_augmented_images(dataloader, save_dir, num_images=5):
+    os.makedirs(save_dir, exist_ok=True)
+    count = 0
+
+    for batch in dataloader:
+        images, labels = batch
+        for i in range(images.shape[0]):
+            if count >= num_images:
+                return
+            rgbd = images[i].numpy()
+            rgb = rgbd[:3, :, :]
+            depth = rgbd[3, :, :]
+            label = labels[i].numpy()
+
+            # 反归一化
+            mean = np.array([0.485, 0.456, 0.406])
+            std = np.array([0.229, 0.224, 0.225])
+            rgb = std[:, None, None] * rgb + mean[:, None, None]
+            rgb = np.clip(rgb, 0, 1)
+
+            # 保存RGB图像
+            plt.imsave(f'{save_dir}/image_{count}.png', np.transpose(rgb, (1, 2, 0)))
+
+            # 保存深度图像
+            plt.imsave(f'{save_dir}/depth_{count}.png', depth, cmap='gray')
+
+            # 保存标签图像
+            plt.imsave(f'{save_dir}/label_{count}.png', label, cmap='gray')
+
+            count += 1
