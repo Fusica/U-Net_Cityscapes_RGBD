@@ -65,6 +65,6 @@ class CityscapesRGBDDataset(Dataset):
 
 transform = transforms.Compose([
     transforms.ToPILImage(),
-    transforms.Resize((256, 512)),
+    transforms.Resize((512, 1024)),
     transforms.ToTensor()
 ])

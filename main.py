@@ -1,18 +1,27 @@
-import os
 import argparse
+import torch.multiprocessing as mp
+from train import train
+from test import test
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run training and testing")
-    parser.add_argument('--data_path', type=str, required=True, help="Path to Cityscapes dataset")
+def main():
+    parser = argparse.ArgumentParser(description="Train or Test U-Net on Cityscapes RGB-D dataset")
+    parser.add_argument('mode', choices=['train', 'test'], help="Mode to run: train or test")
+    parser.add_argument('--data_path', type=str, default="/home/server/xwj/datasets/Cityscapes",
+                        help="Path to Cityscapes dataset")
     parser.add_argument('--epochs', type=int, default=50, help="Number of epochs to train")
-    parser.add_argument('--batch_size', type=int, default=4, help="Batch size for training and testing")
+    parser.add_argument('--batch_size', type=int, default=12, help="Batch size for training")
     parser.add_argument('--lr', type=float, default=1e-4, help="Learning rate")
-    parser.add_argument('--test_model', type=str, default=None, help="Path to saved model for testing")
+    parser.add_argument('--resume', type=str, default=None, help="Path to resume training from a checkpoint")
+    parser.add_argument('--use_wandb', action='store_true', help="Use Weights and Biases for logging")
+    parser.add_argument('--world_size', type=int, default=2, help="Number of GPUs to use for DDP training")
+    parser.add_argument('--model_path', type=str, default='best_model.pth', help="Path to the model file for testing")
 
     args = parser.parse_args()
 
-    if not args.test_model:
-        print("Training the model...")
-        os.system(f'python train.py --data_path {args.data_path} --epochs {args.epochs} --batch_size {args.batch_size} --lr {args.lr}')
-    print("Testing the model...")
-    os.system(f'python test.py --data_path {args.data_path} --model_path {args.test_model if args.test_model else "model_epoch_50.pth"} --batch_size {args.batch_size}')
+    if args.mode == 'train':
+        mp.spawn(train, nprocs=args.world_size, args=(args,))
+    elif args.mode == 'test':
+        test(args)
+
+if __name__ == "__main__":
+    main()

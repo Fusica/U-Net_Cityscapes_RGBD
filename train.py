@@ -1,43 +1,35 @@
-import argparse
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, DistributedSampler
-from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
-from unet import UNet
-from dataset import CityscapesRGBDDataset, transform
 import os
-import wandb
+import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
+from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data import DataLoader, DistributedSampler
+from tqdm import tqdm
+import torch.nn as nn
+import torch.optim as optim
 
-from utils.choose_device import get_device
-
-
-def evaluate(model, data_loader, device, criterion):
-    model.eval()
-    running_loss = 0.0
-    with torch.no_grad():
-        for images, labels in data_loader:
-            images = images.to(device)
-            labels = labels.to(device)
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            running_loss += loss.item()
-    return running_loss / len(data_loader)
+from datasets.cityscapes import CityscapesRGBDDataset, transform
+from models.unet import UNet
+from utils.utils import calculate_iou, evaluate, get_run_folder, print_args
 
 
 def train(rank, args):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
 
+    run_folder = get_run_folder()
     if args.use_wandb and rank == 0:
+        import wandb
         wandb.init(project="unet-cityscapes-rgbd", config=args)
 
     dist.init_process_group("nccl", rank=rank, world_size=args.world_size)
     device = torch.device(f'cuda:{rank}')
     torch.cuda.set_device(device)
+
+    if rank == 0:
+        print(f"Using GPU: {torch.cuda.get_device_name(device)} (CUDA ID: {rank})")
+        print_args(args)
+        print(f"Experiment folder: {run_folder}")
 
     model = UNet(in_channels=4, out_channels=34).to(device)
     model = nn.parallel.DistributedDataParallel(model, device_ids=[rank])
@@ -47,6 +39,8 @@ def train(rank, args):
 
     start_epoch = 0
     best_loss = float('inf')
+    best_model_path = None
+    last_model_path = None
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=device)
@@ -67,23 +61,26 @@ def train(rank, args):
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, sampler=val_sampler)
 
     if rank == 0:
-        writer = SummaryWriter()
+        writer = SummaryWriter(log_dir=run_folder)
 
     for epoch in range(start_epoch, args.epochs):
         model.train()
         running_loss = 0.0
         train_sampler.set_epoch(epoch)
-        for images, labels in tqdm(train_loader, disable=(rank != 0)):
-            images = images.to(device)
-            labels = labels.to(device)
+        with tqdm(total=len(train_loader), desc=f'Epoch {epoch + 1}/{args.epochs}', disable=(rank != 0)) as pbar:
+            for images, labels in train_loader:
+                images = images.to(device)
+                labels = labels.to(device)
 
-            optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+                optimizer.zero_grad()
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
 
-            running_loss += loss.item()
+                running_loss += loss.item()
+                pbar.set_postfix({'loss': running_loss / (pbar.n + 1)})
+                pbar.update(1)
 
         epoch_loss = running_loss / len(train_loader)
         if rank == 0:
@@ -92,24 +89,34 @@ def train(rank, args):
                 wandb.log({"Loss/train": epoch_loss})
             print(f'Epoch [{epoch + 1}/{args.epochs}], Loss: {epoch_loss:.4f}')
 
-        if (epoch + 1) % 5 == 0 or (epoch + 1) == args.epochs:
-            val_loss = evaluate(model, val_loader, device, criterion)
-            if rank == 0:
-                writer.add_scalar('Loss/val', val_loss, epoch)
-                if args.use_wandb:
-                    wandb.log({"Loss/val": val_loss})
-                print(f'Epoch [{epoch + 1}/{args.epochs}], Validation Loss: {val_loss:.4f}')
+            # Run validation at the end of each epoch
+            val_loss, val_miou = evaluate(model, val_loader, device, criterion, num_classes=34)
+            writer.add_scalar('Loss/val', val_loss, epoch)
+            writer.add_scalar('mIoU/val', val_miou, epoch)
+            if args.use_wandb:
+                wandb.log({"Loss/val": val_loss, "mIoU/val": val_miou})
+            print(
+                f'Epoch [{epoch + 1}/{args.epochs}], Validation Loss: {val_loss:.4f}, Validation mIoU: {val_miou:.4f}')
 
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'best_loss': best_loss,
-                }, f'model_checkpoint_epoch_{epoch + 1}.pth')
+            # Save the latest model and delete the previous one
+            current_model_path = os.path.join(run_folder, f'model_checkpoint_epoch_{epoch + 1}.pth')
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_loss': best_loss,
+            }, current_model_path)
+            if last_model_path and os.path.exists(last_model_path):
+                os.remove(last_model_path)
+            last_model_path = current_model_path
 
-                if val_loss < best_loss:
-                    best_loss = val_loss
-                    torch.save(model.state_dict(), 'best_model.pth')
+            # Save the best model and delete the previous one
+            if val_loss < best_loss:
+                best_loss = val_loss
+                if best_model_path and os.path.exists(best_model_path):
+                    os.remove(best_model_path)
+                best_model_path = os.path.join(run_folder, 'best_model.pth')
+                torch.save(model.state_dict(), best_model_path)
 
     if rank == 0:
         writer.close()
@@ -117,22 +124,3 @@ def train(rank, args):
             wandb.finish()
 
     dist.destroy_process_group()
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Train U-Net on Cityscapes RGB-D dataset")
-    parser.add_argument('--data_path', type=str, default="/home/server/xwj/datasets/Cityscapes",
-                        help="Path to Cityscapes dataset")
-    parser.add_argument('--epochs', type=int, default=50, help="Number of epochs to train")
-    parser.add_argument('--batch_size', type=int, default=8, help="Batch size for training")
-    parser.add_argument('--lr', type=float, default=1e-4, help="Learning rate")
-    parser.add_argument('--resume', type=str, default=None, help="Path to resume training from a checkpoint")
-    parser.add_argument('--use_wandb', action='store_true', help="Use Weights and Biases for logging")
-    parser.add_argument('--world_size', type=int, default=2, help="Number of GPUs to use for DDP training")
-
-    args = parser.parse_args()
-    mp.spawn(train, nprocs=args.world_size, args=(args,))
-
-
-if __name__ == "__main__":
-    main()
