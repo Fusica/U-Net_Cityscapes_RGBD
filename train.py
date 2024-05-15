@@ -87,14 +87,14 @@ def train(rank, args, run_dir):
         if rank == 0:
             print(f"Resuming training from epoch {start_epoch}")
 
-    train_dataset = CityscapesRGBDDataset(root=args.data_path, split='train')
-    val_dataset = CityscapesRGBDDataset(root=args.data_path, split='val')
+    train_dataset = CityscapesRGBDDataset(root=args.data_path, split='train', transform=transform)
+    val_dataset = CityscapesRGBDDataset(root=args.data_path, split='val', transform=transform)
 
     train_sampler = DistributedSampler(train_dataset, num_replicas=args.world_size, rank=rank)
     val_sampler = DistributedSampler(val_dataset, num_replicas=args.world_size, rank=rank)
 
-    train_loader = DataLoader(train_dataset, batch_size=args.train_batch_size, sampler=train_sampler)
-    val_loader = DataLoader(val_dataset, batch_size=args.val_batch_size, sampler=val_sampler)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=train_sampler)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, sampler=val_sampler)
 
     if rank == 0:
         log_dir = os.path.join(run_dir, 'log')
@@ -173,8 +173,7 @@ def main():
     parser.add_argument('--data_path', type=str, default="/mnt/xwj/datasets/Cityscapes",
                         help="Path to Cityscapes dataset")
     parser.add_argument('--epochs', type=int, default=500, help="Number of epochs to train")
-    parser.add_argument('--train_batch_size', type=int, default=8, help="Batch size for training")
-    parser.add_argument('--val_batch_size', type=int, default=4, help='validation batch size')
+    parser.add_argument('--batch_size', type=int, default=8, help="Batch size for training")
     parser.add_argument('--lr', type=float, default=1e-4, help="Learning rate")
     parser.add_argument('--resume', type=str, default=None, help="Path to resume training from a checkpoint")
     parser.add_argument('--use_wandb', action='store_true', help="Use Weights and Biases for logging")

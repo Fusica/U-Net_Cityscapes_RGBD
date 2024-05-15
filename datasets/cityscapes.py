@@ -3,98 +3,71 @@ import cv2
 import torch
 from torch.utils.data import Dataset
 from torchvision.transforms import transforms
-from PIL import Image
 
-from datasets import custom_transform as tr
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 class CityscapesRGBDDataset(Dataset):
-    def __init__(self, root, split='train'):
+    def __init__(self, root, split='train', transform=None):
         self.root = root
         self.split = split
-        self.images = {}
-        self.disparities = {}
-        self.labels = {}
+        self.transform = transform
 
-        self.images_base = os.path.join(self.root, 'leftImg8bit', self.split)
-        self.disparities_base = os.path.join(self.root, 'disparity', self.split)
-        self.annotations_base = os.path.join(self.root, 'gtFine', self.split)
+        self.images_dir = os.path.join(root, 'leftImg8bit', split)
+        self.depth_dir = os.path.join(root, 'disparity', split)
+        self.labels_dir = os.path.join(root, 'gtFine', split)
 
-        self.images[split] = self.recursive_glob(rootdir=self.images_base, suffix='.png')
-        self.images[split].sort()
+        self.image_paths = []
+        self.depth_paths = []
+        self.label_paths = []
 
-        self.disparities[split] = self.recursive_glob(rootdir=self.disparities_base, suffix='.png')
-        self.disparities[split].sort()
-
-        self.labels[split] = self.recursive_glob(rootdir=self.annotations_base, suffix='labelTrainIds.png')
-        self.labels[split].sort()
-
-        self.ignore_index = 255
-
-        if not self.images[split]:
-            raise Exception("No RGB images for split=[%s] found in %s" % (split, self.images_base))
-        if not self.disparities[split]:
-            raise Exception("No depth images for split=[%s] found in %s" % (split, self.disparities_base))
-
-        print("Found %d %s RGB images" % (len(self.images[split]), split))
-        print("Found %d %s disparity images" % (len(self.disparities[split]), split))
+        for city in os.listdir(self.images_dir):
+            if city == '.DS_Store':
+                continue
+            city_images_dir = os.path.join(self.images_dir, city)
+            city_depth_dir = os.path.join(self.depth_dir, city)
+            city_labels_dir = os.path.join(self.labels_dir, city)
+            for file_name in os.listdir(city_images_dir):
+                if file_name.endswith('_leftImg8bit.png'):
+                    self.image_paths.append(os.path.join(city_images_dir, file_name))
+                    depth_name = file_name.replace('_leftImg8bit.png', '_disparity.png')
+                    self.depth_paths.append(os.path.join(city_depth_dir, depth_name))
+                    label_name = file_name.replace('_leftImg8bit.png', '_gtFine_labelIds.png')
+                    self.label_paths.append(os.path.join(city_labels_dir, label_name))
 
     def __len__(self):
-        return len(self.images[self.split])
+        return len(self.image_paths)
 
-    def __getitem__(self, index):
+    def __getitem__(self, idx):
+        image_path = self.image_paths[idx]
+        depth_path = self.depth_paths[idx]
+        label_path = self.label_paths[idx]
 
-        img_path = self.images[self.split][index].rstrip()
-        disp_path = self.disparities[self.split][index].rstrip()
-        lbl_path = self.labels[self.split][index].rstrip()
-        _img = Image.open(img_path).convert('RGB')
-        _depth = Image.open(disp_path)
-        _target = Image.open(lbl_path)
+        image = cv2.imread(image_path)
+        depth = cv2.imread(depth_path, cv2.IMREAD_GRAYSCALE)
+        label = cv2.imread(label_path, cv2.IMREAD_GRAYSCALE)
 
-        sample = {'image': _img, 'depth': _depth, 'label': _target}
+        if image is None:
+            raise FileNotFoundError(f"RGB image not found: {image_path}")
+        if depth is None:
+            raise FileNotFoundError(f"Depth image not found: {depth_path}")
+        if label is None:
+            raise FileNotFoundError(f"Label image not found: {label_path}")
 
-        if self.split == 'train':
-            return self.transform_tr(sample)
-        elif self.split == 'val':
-            return self.transform_val(sample), img_path
-        elif self.split == 'test':
-            return self.transform_ts(sample)
+        if self.transform:
+            image = self.transform(image)
+            depth = cv2.resize(depth, (image.shape[2], image.shape[1]))  # 调整深度图像的大小与RGB图像一致
+            label = cv2.resize(label, (image.shape[2], image.shape[1]), interpolation=cv2.INTER_NEAREST)  # 调整标签图像的大小
+            depth = transforms.ToTensor()(depth)  # 将深度图像转换为tensor并增加一个通道维度
 
-    def recursive_glob(self, rootdir='.', suffix=''):
-        """Performs recursive glob with given suffix and rootdir
-            :param rootdir is the root directory
-            :param suffix is the suffix to be searched
-        """
-        return [os.path.join(looproot, filename)
-                for looproot, _, filenames in os.walk(rootdir)
-                for filename in filenames if filename.endswith(suffix)]
+        rgbd = torch.cat([image, depth], dim=0)  # 将RGB和深度图像在通道维度上拼接
 
-    def transform_tr(self, sample):
-        composed_transforms = transforms.Compose([
-            tr.CropBlackArea(),
-            tr.RandomHorizontalFlip(),
-            tr.RandomScaleCrop(base_size=1024, crop_size=768, fill=255),
-            # tr.RandomGaussianBlur(),
-            tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-            tr.ToTensor()])
+        return rgbd, torch.from_numpy(label).long()
 
-        return composed_transforms(sample)
 
-    def transform_val(self, sample):
-
-        composed_transforms = transforms.Compose([
-            tr.CropBlackArea(),
-            tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-            tr.ToTensor()])
-
-        return composed_transforms(sample)
-
-    def transform_ts(self, sample):
-
-        composed_transforms = transforms.Compose([
-            tr.CropBlackArea(),
-            tr.FixedResize(size=768),
-            tr.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-            tr.ToTensor()])
-
-        return composed_transforms(sample)
+transform = transforms.Compose([
+    transforms.ToPILImage(),
+    transforms.Resize((256, 512)),
+    transforms.ToTensor()
+])
