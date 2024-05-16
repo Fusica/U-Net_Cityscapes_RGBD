@@ -85,9 +85,6 @@ class CropBlackArea(object):
         img = img.resize((width, height), Image.BILINEAR)
         depth = depth.resize((width, height), Image.BILINEAR)
         mask = mask.resize((width, height), Image.NEAREST)
-        # img = img.resize((512,1024), Image.BILINEAR)
-        # depth = depth.resize((512,1024), Image.BILINEAR)
-        # mask = mask.resize((512,1024), Image.NEAREST)
 
         return {'image': img,
                 'depth': depth,

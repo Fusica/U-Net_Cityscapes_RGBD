@@ -199,67 +199,45 @@ class Trainer(object):
 
 def main():
     parser = argparse.ArgumentParser(description="PyTorch RFNet Training")
-    parser.add_argument('--depth', action="store_true", default=False,
+    parser.add_argument('--depth', action="store_true", default=True,
                         help='training with depth image or not (default: False)')
-    parser.add_argument('--dataset', type=str, default='cityscapes',
-                        choices=['citylostfound', 'cityscapes'],
-                        help='dataset name (default: cityscapes)')
-    parser.add_argument('--workers', type=int, default=4,
-                        metavar='N', help='dataloader threads')
-    parser.add_argument('--base-size', type=int, default=1024,
-                        help='base image size')
-    parser.add_argument('--crop-size', type=int, default=768,
-                        help='crop image size')
-    parser.add_argument('--loss-type', type=str, default='ce',
-                        choices=['ce', 'focal'],
+    parser.add_argument('--dataset', type=str, default='cityscapes', help='dataset name (default: cityscapes)')
+    parser.add_argument('--workers', type=int, default=4, metavar='N', help='dataloader threads')
+    parser.add_argument('--base-size', type=int, default=1024, help='base image size')
+    parser.add_argument('--crop-size', type=int, default=768, help='crop image size')
+    parser.add_argument('--loss-type', type=str, default='ce', choices=['ce', 'focal'],
                         help='loss func type (default: ce)')
     # training hyper params
-    parser.add_argument('--epochs', type=int, default=None, metavar='N',
+    parser.add_argument('--epochs', type=int, default=200, metavar='N',
                         help='number of epochs to train (default: auto)')
-    parser.add_argument('--start_epoch', type=int, default=0,
-                        metavar='N', help='start epochs (default:0)')
-    parser.add_argument('--batch-size', type=int, default=None,
-                        metavar='N', help='input batch size for \
-                                training (default: auto)')
-    parser.add_argument('--val-batch-size', type=int, default=None,
-                        metavar='N', help='input batch size for \
-                                testing (default: auto)')
-    parser.add_argument('--test-batch-size', type=int, default=1,
-                        metavar='N', help='input batch size for \
-                                testing (default: auto)')
+    parser.add_argument('--start_epoch', type=int, default=0, metavar='N', help='start epochs (default:0)')
+    parser.add_argument('--batch-size', type=int, default=8, metavar='N',
+                        help='input batch size for training (default: auto)')
+    parser.add_argument('--val-batch-size', type=int, default=3, metavar='N',
+                        help='input batch size for testing (default: auto)')
+    parser.add_argument('--test-batch-size', type=int, default=1, metavar='N',
+                        help='input batch size for testing (default: auto)')
     parser.add_argument('--use-balanced-weights', action='store_true', default=True,
                         help='whether to use balanced weights (default: True)')
     # optimizer params
-    parser.add_argument('--lr', type=float, default=1e-4, metavar='LR',
-                        help='learning rate (default: auto)')
-    parser.add_argument('--lr-scheduler', type=str, default='cos',
-                        choices=['poly', 'step', 'cos'],
+    parser.add_argument('--lr', type=float, default=1e-4, metavar='LR', help='learning rate (default: auto)')
+    parser.add_argument('--lr-scheduler', type=str, default='cos', choices=['poly', 'step', 'cos'],
                         help='lr scheduler mode: (default: cos)')
-    parser.add_argument('--momentum', type=float, default=0.9,
-                        metavar='M', help='momentum (default: 0.9)')
-    parser.add_argument('--weight-decay', type=float, default=2.5e-5,
-                        metavar='M', help='w-decay (default: 5e-4)')
+    parser.add_argument('--momentum', type=float, default=0.9, metavar='M', help='momentum (default: 0.9)')
+    parser.add_argument('--weight-decay', type=float, default=2.5e-5, metavar='M', help='w-decay (default: 5e-4)')
     # cuda, seed and logging
-    parser.add_argument('--no-cuda', action='store_true', default=
-    False, help='disables CUDA training')
-    parser.add_argument('--gpu-ids', type=str, default='0',
-                        help='use which gpu to train, must be a \
-                        comma-separated list of integers only (default=0)')
-    parser.add_argument('--seed', type=int, default=1, metavar='S',
-                        help='random seed (default: 1)')
+    parser.add_argument('--no-cuda', action='store_true', default=False, help='disables CUDA training')
+    parser.add_argument('--gpu-ids', type=str, default='0,1,2,3',
+                        help='use which gpu to train, must be a comma-separated list of integers only (default=0)')
+    parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed (default: 1)')
     # checking point
-    parser.add_argument('--resume', type=str, default=None,
-                        help='put the path to resuming file if needed')
-    parser.add_argument('--checkname', type=str, default=None,
-                        help='set the checkpoint name')
+    parser.add_argument('--resume', type=str, default=None, help='put the path to resuming file if needed')
+    parser.add_argument('--checkname', type=str, default="train", help='set the checkpoint name')
     # finetuning pre-trained models
-    parser.add_argument('--ft', action='store_true', default=False,
-                        help='finetuning on a different dataset')
+    parser.add_argument('--ft', action='store_true', default=False, help='finetuning on a different dataset')
     # evaluation option
-    parser.add_argument('--eval-interval', type=int, default=1,
-                        help='evaluuation interval (default: 1)')
-    parser.add_argument('--no-val', action='store_true', default=False,
-                        help='skip validation during training')
+    parser.add_argument('--eval-interval', type=int, default=1, help='evaluuation interval (default: 1)')
+    parser.add_argument('--no-val', action='store_true', default=False, help='skip validation during training')
 
     args = parser.parse_args()
     args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -272,7 +250,6 @@ def main():
     if args.epochs is None:
         epoches = {
             'cityscapes': 200,
-            'citylostfound': 200,
         }
         args.epochs = epoches[args.dataset.lower()]
 
@@ -285,7 +262,6 @@ def main():
     if args.lr is None:
         lrs = {
             'cityscapes': 0.0001,
-            'citylostfound': 0.0001,
         }
         args.lr = lrs[args.dataset.lower()] / (4 * len(args.gpu_ids)) * args.batch_size
 

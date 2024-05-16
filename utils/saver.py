@@ -18,7 +18,7 @@ class Saver(object):
         if not os.path.exists(self.experiment_dir):
             os.makedirs(self.experiment_dir)
 
-    def save_checkpoint(self, state, is_best, filename='checkpoint.pth'):  # filename from .pth.tar change to .pth?
+    def save_checkpoint(self, state, is_best, filename='last.pth'):  # filename from .pth.tar change to .pth?
         """Saves checkpoint to disk"""
         filename = os.path.join(self.experiment_dir, filename)
         torch.save(state, filename)

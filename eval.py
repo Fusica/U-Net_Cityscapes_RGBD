@@ -128,32 +128,20 @@ def load_my_state_dict(model, state_dict):  # custom function to load model when
 
 def main():
     parser = argparse.ArgumentParser(description="PyTorch RFNet validation")
-    parser.add_argument('--dataset', type=str, default='cityscapes',
-                        choices=['citylostfound', 'cityscapes'],
-                        help='dataset name (default: cityscapes)')
-    parser.add_argument('--workers', type=int, default=4,
-                        metavar='N', help='dataloader threads')
-    parser.add_argument('--base-size', type=int, default=1024,
-                        help='base image size')
-    parser.add_argument('--batch-size', type=int, default=6,
-                        help='batch size for training')
-    parser.add_argument('--val-batch-size', type=int, default=1,
-                        metavar='N', help='input batch size for \
-                                validating (default: auto)')
-    parser.add_argument('--test-batch-size', type=int, default=1,
-                        metavar='N', help='input batch size for \
-                                testing (default: auto)')
-    parser.add_argument('--no-cuda', action='store_true', default=
-    False, help='disables CUDA training')
+    parser.add_argument('--dataset', type=str, default='cityscapes', help='dataset name (default: cityscapes)')
+    parser.add_argument('--workers', type=int, default=4, metavar='N', help='dataloader threads')
+    parser.add_argument('--base-size', type=int, default=1024, help='base image size')
+    parser.add_argument('--batch-size', type=int, default=6, help='batch size for training')
+    parser.add_argument('--val-batch-size', type=int, default=1, metavar='N',
+                        help='input batch size for validating (default: auto)')
+    parser.add_argument('--test-batch-size', type=int, default=1, metavar='N',
+                        help='input batch size for testing (default: auto)')
+    parser.add_argument('--no-cuda', action='store_true', default=False, help='disables CUDA training')
     parser.add_argument('--gpu-ids', type=str, default='0',
-                        help='use which gpu to train, must be a \
-                        comma-separated list of integers only (default=0)')
-    parser.add_argument('--checkname', type=str, default=None,
-                        help='set the checkpoint name')
-    parser.add_argument('--weight-path', type=str, default=None,
-                        help='enter your path of the weight')
-    parser.add_argument('--label-save-path', type=str, default='E:/RFNet/test/label/',
-                        help='path to save label')
+                        help='use which gpu to train, must be a comma-separated list of integers only (default=0)')
+    parser.add_argument('--checkname', type=str, default=None, help='set the checkpoint name')
+    parser.add_argument('--weight-path', type=str, default=None, help='enter your path of the weight')
+    parser.add_argument('--label-save-path', type=str, default='E:/RFNet/test/label/', help='path to save label')
     parser.add_argument('--merge-label-save-path', type=str, default='E:/RFNet/test/merge/',
                         help='path to save merged label')
     parser.add_argument('--merge', action='store_true', default=False, help='merge image and label')
