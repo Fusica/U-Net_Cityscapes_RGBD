@@ -2,7 +2,6 @@ import argparse
 import os
 import time
 
-import torch
 import torch.backends.cudnn as cudnn
 from PIL import Image
 from torchvision.transforms import ToPILImage
@@ -10,8 +9,8 @@ from tqdm import tqdm
 
 from dataloaders import make_data_loader
 from dataloaders.utils import Colorize
-from models.resnet.resnet_single_scale_single_attention import *
-from models.rfnet import RFNet
+from models.unet import UNet
+from models.unet_rgbd.unet_rgbd import *
 from utils.metrics import Evaluator
 
 
@@ -29,8 +28,8 @@ class Validator(object):
         self.evaluator = Evaluator(self.num_class)
 
         # Define network
-        self.resnet = resnet18(pretrained=True, efficient=False, use_bn=True)
-        self.model = RFNet(self.resnet, num_classes=self.num_class, use_bn=True)
+        self.unet_rgbd = UNet_RGBD(use_bn=True)
+        self.model = UNet(self.unet_rgbd, num_classes=self.num_class, use_bn=True)
 
         if args.cuda:
             self.model = torch.nn.DataParallel(self.model, device_ids=self.args.gpu_ids)

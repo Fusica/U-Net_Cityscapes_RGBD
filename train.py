@@ -7,8 +7,8 @@ from tqdm import tqdm
 
 from dataloaders import make_data_loader
 from models.replicate import patch_replication_callback
-from models.resnet.resnet_single_scale_single_attention import *
-from models.rfnet import RFNet
+from models.unet_rgbd.unet_rgbd import *
+from models.unet import UNet
 from mypath import Path
 from utils.calculate_weights import calculate_weigths_labels
 from utils.loss import SegmentationLosses
@@ -21,27 +21,27 @@ from utils.summaries import TensorboardSummary
 class Trainer(object):
     def __init__(self, args):
         self.args = args
+        num_gpus = len(args.gpu_ids)
         # Define Saver
         self.saver = Saver(args)
         self.saver.save_experiment_config()
         # Define Tensorboard Summary
         self.summary = TensorboardSummary(self.saver.experiment_dir)
         self.writer = self.summary.create_summary()
-        # denormalize for detph image
+        # denormalize for depth image
         self.mean_depth = torch.as_tensor(0.12176, dtype=torch.float32, device='cpu')
         self.std_depth = torch.as_tensor(0.09752, dtype=torch.float32, device='cpu')
         # Define Dataloader
         kwargs = {'num_workers': args.workers, 'pin_memory': False}
         self.train_loader, self.val_loader, self.test_loader, self.nclass = make_data_loader(args, **kwargs)
         # Define network
-        resnet = resnet18(pretrained=True, efficient=False, use_bn=True)
-        model = RFNet(resnet, num_classes=self.nclass, use_bn=True)
+        unet_rgbd = UNet_RGBD(use_bn=True)
+        model = UNet(unet_rgbd, num_classes=self.nclass, use_bn=True)
 
         train_params = [{'params': model.random_init_params()},
                         {'params': model.fine_tune_params(), 'lr': args.lr, 'weight_decay': args.weight_decay}]
         # Define Optimizer
-        optimizer = torch.optim.Adam(train_params, lr=args.lr * 4,
-                                     weight_decay=args.weight_decay * 4)
+        optimizer = torch.optim.Adam(train_params, lr=args.lr * num_gpus, weight_decay=args.weight_decay * num_gpus)
         # Define Criterion
         # whether to use class balanced weights
         if args.use_balanced_weights:
@@ -198,7 +198,7 @@ class Trainer(object):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="PyTorch RFNet Training")
+    parser = argparse.ArgumentParser(description="PyTorch UNet Training")
     parser.add_argument('--depth', action="store_true", default=True,
                         help='training with depth image or not (default: False)')
     parser.add_argument('--dataset', type=str, default='cityscapes', help='dataset name (default: cityscapes)')
@@ -224,7 +224,7 @@ def main():
     parser.add_argument('--lr-scheduler', type=str, default='cos', choices=['poly', 'step', 'cos'],
                         help='lr scheduler mode: (default: cos)')
     parser.add_argument('--momentum', type=float, default=0.9, metavar='M', help='momentum (default: 0.9)')
-    parser.add_argument('--weight-decay', type=float, default=2.5e-5, metavar='M', help='w-decay (default: 5e-4)')
+    parser.add_argument('--weight-decay', type=float, default=1e-4, metavar='M', help='w-decay (default: 1e-4)')
     # cuda, seed and logging
     parser.add_argument('--no-cuda', action='store_true', default=False, help='disables CUDA training')
     parser.add_argument('--gpu-ids', type=str, default='0,1,2,3',
@@ -266,7 +266,7 @@ def main():
         args.lr = lrs[args.dataset.lower()] / (4 * len(args.gpu_ids)) * args.batch_size
 
     if args.checkname is None:
-        args.checkname = 'RFNet'
+        args.checkname = 'UNet'
     print(args)
     torch.manual_seed(args.seed)
     trainer = Trainer(args)
