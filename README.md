@@ -2,6 +2,8 @@
 
 This repository contains the implementation of a U-Net model for semantic segmentation on the Cityscapes dataset, incorporating RGB-D data. The project includes training and testing scripts, dataset loading, and the use of `argparse` for parameter tuning, along with TensorBoard and Wandb for monitoring training progress.
 
+Referencing RFNet, the overall code structure was refactored to support the UNet network architecture.
+
 ## Project Structure
 
 ```
@@ -78,14 +80,14 @@ pip install torch torchvision tqdm opencv-python tensorboard
 
 
 ## Getting Started
-### Training
+### Train
 To train the U-Net model, use the following command:
 ```bash
-python main.py --data_path path_to_cityscapes --epochs 50 --batch_size 4 --lr 1e-4
+python train.py --data_path path_to_cityscapes --epochs 50 --batch_size 4 --lr 1e-4
 ```
 
-### Testing
-To test the U-Net model, use the following command:
+### Validation
+To validate the U-Net model, use the following command:
 ```bash
-python main.py --data_path path_to_cityscapes --test_only
+python eval.py --data_path path_to_cityscapes
 ```
