@@ -51,6 +51,8 @@ def evaluate(model, data_loader, device, criterion, num_classes, scaler):
             iou = calculate_iou(preds, labels, num_classes)
             iou_total += iou
 
+            torch.cuda.empty_cache()  # Empty the cache to free up GPU memory
+
     return running_loss / len(data_loader), iou_total / len(data_loader)
 
 
@@ -127,6 +129,8 @@ def train(rank, args, run_dir):
                 pbar.set_postfix({'loss': running_loss / (pbar.n + 1), 'memory(MB)': memory_allocated})
                 pbar.update(1)
 
+                torch.cuda.empty_cache()  # Empty the cache to free up GPU memory
+
         epoch_loss = running_loss / len(train_loader)
         if rank == 0:
             writer.add_scalar('Loss/train', epoch_loss, epoch)
@@ -161,6 +165,8 @@ def train(rank, args, run_dir):
                 for file in os.listdir(model_dir):
                     if file.startswith('model_checkpoint_epoch_'):
                         os.remove(os.path.join(model_dir, file))
+
+        torch.cuda.empty_cache()  # Empty cache on all GPUs
 
     if rank == 0:
         writer.close()
