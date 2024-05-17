@@ -1,4 +1,4 @@
-# U-Net for Cityscapes RGB-D Segmentation (Currently v0.2 is executable)
+# U-Net for Cityscapes RGB-D Segmentation
 
 This repository contains the implementation of a U-Net model for semantic segmentation on the Cityscapes dataset, incorporating RGB-D data. The project includes training and testing scripts, dataset loading, and the use of `argparse` for parameter tuning, along with TensorBoard and Wandb for monitoring training progress.
 
