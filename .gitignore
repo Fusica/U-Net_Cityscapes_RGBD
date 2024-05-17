@@ -36,3 +36,6 @@ env/
 
 runs/
 wandb/
+
+*.pth
+result/

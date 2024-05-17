@@ -20,6 +20,3 @@ class UNet(nn.Module):
 
     def random_init_params(self):
         return chain(*([self.logits.parameters(), self.backbone.random_init_params()]))
-
-    def fine_tune_params(self):
-        return self.backbone.fine_tune_params()

@@ -21,7 +21,6 @@ from utils.summaries import TensorboardSummary
 class Trainer(object):
     def __init__(self, args):
         self.args = args
-        num_gpus = len(args.gpu_ids)
         # Define Saver
         self.saver = Saver(args)
         self.saver.save_experiment_config()
@@ -38,10 +37,9 @@ class Trainer(object):
         unet_rgbd = UNet_RGBD(use_bn=True)
         model = UNet(unet_rgbd, num_classes=self.nclass, use_bn=True)
 
-        train_params = [{'params': model.random_init_params()},
-                        {'params': model.fine_tune_params(), 'lr': args.lr, 'weight_decay': args.weight_decay}]
+        train_params = [{'params': model.random_init_params(), 'lr': args.lr, 'weight_decay': args.weight_decay}]
         # Define Optimizer
-        optimizer = torch.optim.Adam(train_params, lr=args.lr * num_gpus, weight_decay=args.weight_decay * num_gpus)
+        optimizer = torch.optim.Adam(train_params, lr=args.lr * 4, weight_decay=args.weight_decay * 4)
         # Define Criterion
         # whether to use class balanced weights
         if args.use_balanced_weights:
@@ -202,7 +200,7 @@ def main():
     parser.add_argument('--depth', action="store_true", default=True,
                         help='training with depth image or not (default: False)')
     parser.add_argument('--dataset', type=str, default='cityscapes', help='dataset name (default: cityscapes)')
-    parser.add_argument('--workers', type=int, default=4, metavar='N', help='dataloader threads')
+    parser.add_argument('--workers', type=int, default=8, metavar='N', help='dataloader threads')
     parser.add_argument('--base-size', type=int, default=1024, help='base image size')
     parser.add_argument('--crop-size', type=int, default=768, help='crop image size')
     parser.add_argument('--loss-type', type=str, default='ce', choices=['ce', 'focal'],

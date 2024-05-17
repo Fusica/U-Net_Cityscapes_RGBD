@@ -41,6 +41,11 @@ class UNet_RGBD(nn.Module):
         self.dconv_up2 = DoubleConv(256 + 128, 128)
         self.dconv_up1 = DoubleConv(128 + 64, self.num_features)
 
+        # attention
+        self.attention_rgb = self.attention(512)
+        self.attention_d = self.attention(512)
+
+
     def forward(self, rgb, depth=None):
         # Down RGB
         conv1_rgb = self.dconv_down1_rgb(rgb)
@@ -53,7 +58,7 @@ class UNet_RGBD(nn.Module):
 
         # Down Depth
         if depth is not None:
-            conv1_d = self.dconv_down1_d(depth)
+            conv1_d = self.dconv_down1_d(depth.unsqueeze(1))
             x_d = self.maxpool(conv1_d)
             conv2_d = self.dconv_down2_d(x_d)
             x_d = self.maxpool(conv2_d)
@@ -62,9 +67,8 @@ class UNet_RGBD(nn.Module):
             x_d = self.dconv_down4_d(x_d)
 
             # Attention and fusion
-            x_rgb_attention = self.attention(x_rgb.size(1))(x_rgb)
-            x_d = x_d.unsqueeze(0)
-            x_d_attention = self.attention(x_d.size(1))(x_d).squeeze(0)
+            x_rgb_attention = self.attention_rgb(x_rgb)
+            x_d_attention = self.attention_d(x_d)
             x = torch.mul(x_rgb, x_rgb_attention) + torch.mul(x_d, x_d_attention)
         else:
             x = x_rgb
@@ -86,11 +90,9 @@ class UNet_RGBD(nn.Module):
         pool_attention = nn.AdaptiveAvgPool2d(1)
         conv_attention = nn.Conv2d(num_channels, num_channels, kernel_size=1)
         activate = nn.Sigmoid()
+
         return nn.Sequential(pool_attention, conv_attention, activate)
 
     # TODO can modify here
     def random_init_params(self):
-        return self.parameters()
-
-    def fine_tune_params(self):
         return self.parameters()

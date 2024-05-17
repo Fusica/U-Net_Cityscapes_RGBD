@@ -20,10 +20,11 @@ class SegmentationLosses(object):
         else:
             raise NotImplementedError
 
+    # TODO 这里对于CE的修改可能存在问题
     def CrossEntropyLoss(self, logit, target):
         n, c, h, w = logit.size()
         criterion = nn.CrossEntropyLoss(weight=self.weight, ignore_index=self.ignore_index,
-                                        size_average=self.size_average)
+                                        reduction='mean' if self.size_average else 'sum')
         if self.cuda:
             criterion = criterion.cuda()
 
@@ -37,7 +38,7 @@ class SegmentationLosses(object):
     def FocalLoss(self, logit, target, gamma=2, alpha=0.5):
         n, c, h, w = logit.size()
         criterion = nn.CrossEntropyLoss(weight=self.weight, ignore_index=self.ignore_index,
-                                        size_average=self.size_average)
+                                        reduction='mean' if self.size_average else 'sum')
         if self.cuda:
             criterion = criterion.cuda()
 
