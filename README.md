@@ -9,11 +9,14 @@ Referencing RFNet, the overall code structure was refactored to support the UNet
 ```
 project/
 │
-├── unet.py # Defines the U-Net model
-├── dataset.py # Loads the Cityscapes RGB-D dataset
+├── models
+    ├── unet_rgbd.py # Defines the U-Net model
+├── dataloaders
+    ├── datasets
+        ├── cityscapes.py # Loads the Cityscapes RGB-D dataset
 ├── train.py # Trains the U-Net model, saves model, and logs training process
-├── test.py # Tests the U-Net model and computes mIoU
-└── main.py # Main script to run training and testing
+├── eval.py # Evaluates the U-Net model 
+└── inference.py # Infer on a single image and provide the merged result
 ```
 
 ## Cityscapes Structure
